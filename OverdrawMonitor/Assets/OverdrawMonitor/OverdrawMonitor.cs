@@ -1,5 +1,7 @@
 ﻿using System;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 /// <summary> This is a singleton component that is responsible for measuring overdraw information
 /// on the main camera. You shouldn't add this compoenent manually, but use the Instance getter to
@@ -45,18 +47,28 @@ public class OverdrawMonitor : MonoBehaviour
 
 	private ComputeShader computeShader;
 
+	private struct Accum
+	{
+		public int Opaque;
+		public int Transparent;
+	}
+
 	private const int dataSize = 128 * 128;
-	private int[] inputData = new int[dataSize];
-	private int[] resultData = new int[dataSize];
+	private Accum[] inputData = new Accum[dataSize];
+	private Accum[] resultData = new Accum[dataSize];
 	private ComputeBuffer resultBuffer;
 	private Shader replacementShader;
 
 	// ========= Results ========
 	// Last measurement
 	/// <summary> The number of shaded fragments in the last frame. </summary>
-	public long TotalShadedFragments { get; private set; }
+	public long TotalOpaqueShadedFragments { get; private set; }
+	public long TotalTransparentShadedFragments
+	{ get; private set; }
 	/// <summary> The overdraw ration in the last frame. </summary>
 	public float OverdrawRatio { get; private set; }
+	public float TransOverdrawRatio { get; private set;
+	}
 
 	// Sampled measurement
 	/// <summary> Number of shaded fragments in the measured time span. </summary>
@@ -66,6 +78,8 @@ public class OverdrawMonitor : MonoBehaviour
 	/// <summary> The average overdraw in the measured time span. </summary>
 	public float IntervalAverageOverdraw { get; private set; }
 	public float AccumulatedAverageOverdraw { get { return accumulatedIntervalOverdraw / intervalFrames; } }
+	public float AccumulatedTransAverageOverdraw { get { return accumulatedTransIntervalOverdraw / intervalFrames; }
+	}
 
 	// Extreems
 	/// <summary> The maximum overdraw measured. </summary>
@@ -73,6 +87,8 @@ public class OverdrawMonitor : MonoBehaviour
 
 	private long accumulatedIntervalFragments;
 	private float accumulatedIntervalOverdraw;
+	private long accumulatedTransIntervalFragments;
+	private float accumulatedTransIntervalOverdraw;
 	private long intervalFrames;
 
 	private float intervalTime = 0;
@@ -93,26 +109,35 @@ public class OverdrawMonitor : MonoBehaviour
 #endif
 		
 		if (Application.isPlaying) DontDestroyOnLoad(gameObject);
-		gameObject.hideFlags = HideFlags.DontSave | HideFlags.HideInInspector;
+		gameObject.hideFlags = HideFlags.DontSave;// | HideFlags.HideInInspector;
 
 		// Prepare the camera that is going to render the scene with the initial overdraw data.
 		replacementShader = Shader.Find("Debug/OverdrawInt");
 
 		camera = GetComponent<Camera>();
-		if (camera == null) camera = gameObject.AddComponent<Camera>();
-		camera.CopyFrom(Camera.main);
-		camera.SetReplacementShader(replacementShader, null);
-
-		RecreateTexture(Camera.main);
-		RecreateComputeBuffer();
+		if (camera == null)
+			camera = gameObject.AddComponent<Camera>();
+		var cameraData = camera.gameObject.AddComponent<UniversalAdditionalCameraData>();
+		cameraData.SetRenderer(7);
 
 		computeShader = Resources.Load<ComputeShader>("OverdrawParallelReduction");
 
-		for (int i = 0; i < inputData.Length; i++) inputData[i] = 0;
+		for (int i = 0; i < inputData.Length; i++) {
+			inputData[i].Opaque = 0;
+			inputData[i].Transparent = 0;
+		}
+		
 	}
+	
+
+    private void OnEndCameraRendering(ScriptableRenderContext arg1, Camera arg2)
+    {
+		if (camera == arg2)
+			OnPostRender();
+    }
 
 #if UNITY_EDITOR
-	public void SubscribeToPlayStateChanged()
+    public void SubscribeToPlayStateChanged()
 	{
 		UnityEditor.EditorApplication.playmodeStateChanged -= OnPlayStateChanged;
 		UnityEditor.EditorApplication.playmodeStateChanged += OnPlayStateChanged;
@@ -132,11 +157,15 @@ public class OverdrawMonitor : MonoBehaviour
 	public void OnEnable()
 	{
 		disabled = false;
+		// register PostRender
+		RenderPipelineManager.endCameraRendering += OnEndCameraRendering;
 	}
 
 	public void OnDisable()
 	{
 		disabled = true;
+		// deregister PostRender
+		RenderPipelineManager.endCameraRendering -= OnEndCameraRendering;
 		OnDestroy();
 	}
 
@@ -145,11 +174,14 @@ public class OverdrawMonitor : MonoBehaviour
 		if (disabled) return;
 
 		Camera main = Camera.main;
+		if (main == null)
+			return;
 		camera.CopyFrom(main);
 		camera.clearFlags = CameraClearFlags.SolidColor;
 		camera.backgroundColor = Color.black;
 		camera.targetTexture = overdrawTexture;
-		camera.SetReplacementShader(replacementShader, null);
+		// Not effect in SRP
+		//camera.SetReplacementShader(replacementShader, null);
 
 		transform.position = main.transform.position;
 		transform.rotation = main.transform.rotation;
@@ -167,6 +199,8 @@ public class OverdrawMonitor : MonoBehaviour
 
 			accumulatedIntervalFragments = 0;
 			accumulatedIntervalOverdraw = 0;
+			accumulatedTransIntervalFragments = 0;
+			accumulatedTransIntervalOverdraw = 0;
 			intervalFrames = 0;
 		}
 	}
@@ -177,7 +211,7 @@ public class OverdrawMonitor : MonoBehaviour
 	{
 		if (overdrawTexture == null)
 		{
-			overdrawTexture = new RenderTexture(camera.pixelWidth, camera.pixelHeight, 24, RenderTextureFormat.RFloat);
+			overdrawTexture = new RenderTexture(camera.pixelWidth, camera.pixelHeight, 24, RenderTextureFormat.RG32);
 			overdrawTexture.enableRandomWrite = true;
 			camera.targetTexture = overdrawTexture;
 		}
@@ -193,7 +227,7 @@ public class OverdrawMonitor : MonoBehaviour
 	private void RecreateComputeBuffer()
 	{
 		if (resultBuffer != null) return;
-		resultBuffer = new ComputeBuffer(resultData.Length, 4);
+		resultBuffer = new ComputeBuffer(resultData.Length, 8);
 	}
 
 	public void OnDestroy()
@@ -202,7 +236,10 @@ public class OverdrawMonitor : MonoBehaviour
 		{
 			camera.targetTexture = null;
 		}
-		if (resultBuffer != null) resultBuffer.Release();
+		if (resultBuffer != null) {
+			resultBuffer.Release();
+			resultBuffer = null;
+		}
 	}
 
 	public void OnPostRender()
@@ -226,16 +263,21 @@ public class OverdrawMonitor : MonoBehaviour
 		resultBuffer.GetData(resultData);
 
 		// Getting the results
-		TotalShadedFragments = 0;
+		TotalOpaqueShadedFragments = 0;
+		TotalTransparentShadedFragments = 0;
 		for (int i = 0; i < resultData.Length; i++)
 		{
-			TotalShadedFragments += resultData[i];
+			TotalOpaqueShadedFragments += resultData[i].Opaque;
+			TotalTransparentShadedFragments += resultData[i].Transparent;
 		}
 
-		OverdrawRatio = (float)TotalShadedFragments / (xGroups * 32 * yGroups * 32);
+		OverdrawRatio = (float)TotalOpaqueShadedFragments / (xGroups * 32 * yGroups * 32);
+		TransOverdrawRatio = (float)TotalTransparentShadedFragments / (xGroups * 32 * yGroups * 32);
 
-		accumulatedIntervalFragments += TotalShadedFragments;
+		accumulatedIntervalFragments += TotalOpaqueShadedFragments;
 		accumulatedIntervalOverdraw += OverdrawRatio;
+		accumulatedTransIntervalFragments += TotalTransparentShadedFragments;
+		accumulatedTransIntervalOverdraw += TransOverdrawRatio;
 		intervalFrames++;
 
 		if (OverdrawRatio > MaxOverdraw) MaxOverdraw = OverdrawRatio;
@@ -248,6 +290,14 @@ public class OverdrawMonitor : MonoBehaviour
 	{
 		enabled = true;
 		camera.enabled = true;
+
+		// Init Camera relative 
+		if (Camera.main != null) {
+			camera.CopyFrom(Camera.main);
+			camera.SetReplacementShader(replacementShader, null);
+			RecreateTexture(Camera.main);
+		}
+		RecreateComputeBuffer();
 	}
 	
 	public void Stop()

@@ -5,15 +5,22 @@
 #define SIZEY 32
 #define GROUPSIZE SIZEX*SIZEY
 
-groupshared int accumulator[GROUPSIZE];
+struct Accum
+{
+	int Opaque;
+	int Transparent;
+};
 
-Texture2D<float> Overdraw;
-RWStructuredBuffer<int> Output;
+groupshared Accum accumulator[GROUPSIZE];
+
+Texture2D<float2> Overdraw;
+RWStructuredBuffer<Accum> Output;
 
 [numthreads(SIZEX,SIZEY,1)]
 void CSMain (uint3 gid : SV_GroupID, uint3 inp : SV_DispatchThreadID, uint gtidx : SV_GroupIndex)
 {
-	accumulator[gtidx] = (int)(Overdraw[inp.xy].x * 1024);
+	accumulator[gtidx].Opaque = (int)(Overdraw[inp.xy].x * 1024);
+	accumulator[gtidx].Transparent = (int)(Overdraw[inp.xy].y * 1024);
 	
 	// Wait for all
 	GroupMemoryBarrierWithGroupSync();
@@ -23,12 +30,14 @@ void CSMain (uint3 gid : SV_GroupID, uint3 inp : SV_DispatchThreadID, uint gtidx
 	{
 		if (gtidx < ix)
 		{
-			accumulator[gtidx] = (accumulator[gtidx] + accumulator[gtidx + ix]);
+			accumulator[gtidx].Opaque = (accumulator[gtidx].Opaque + accumulator[gtidx + ix].Opaque);
+			accumulator[gtidx].Transparent = (accumulator[gtidx].Transparent + accumulator[gtidx + ix].Transparent);
 		}
 		GroupMemoryBarrierWithGroupSync();
 	}
 	
 	if (gtidx != 0) return;
 	
-	Output[gid.y * 128 + gid.x] = accumulator[0];
+	Output[gid.y * 128 + gid.x].Opaque = accumulator[0].Opaque;
+	Output[gid.y * 128 + gid.x].Transparent = accumulator[0].Transparent;
 }

@@ -5,7 +5,7 @@ using UnityEngine;
 /// only shows the result, <see cref="OverdrawMonitor"/> to check out how this is implemented. </summary>
 public class OverdrawToolWindow : EditorWindow
 {
-	[MenuItem("Tools/Overdraw Tool")]
+	[MenuItem("ArtistTools/Overdraw Tool")]
 	public static void ShowWindow()
 	{
 		var window = GetWindow<OverdrawToolWindow>();
@@ -33,7 +33,9 @@ public class OverdrawToolWindow : EditorWindow
 		{
 			GUILayout.Label("Max\n" + OverdrawMonitor.Instance.MaxOverdraw.ToString("0.000"));
 			GUILayout.FlexibleSpace();
-			GUILayout.Label("Average\n" + OverdrawMonitor.Instance.AccumulatedAverageOverdraw.ToString("0.000"));
+			GUILayout.Label("Average(Opaque)\n" + OverdrawMonitor.Instance.AccumulatedAverageOverdraw.ToString("0.000"));
+			GUILayout.FlexibleSpace();
+			GUILayout.Label("Average(Transparent)\n" + OverdrawMonitor.Instance.AccumulatedTransAverageOverdraw.ToString("0.000"));
 		}
 
 		Repaint();
